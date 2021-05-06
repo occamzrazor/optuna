@@ -25,6 +25,7 @@ from cliff.commandmanager import CommandManager
 from cliff.lister import Lister
 
 import optuna
+from optuna._deprecated import deprecated
 from optuna.exceptions import CLIUsageError
 from optuna.storages import RDBStorage
 
@@ -39,7 +40,7 @@ def _check_storage_url(storage_url: Optional[str]) -> str:
 class _BaseCommand(Command):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
 
-        super(_BaseCommand, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.logger = optuna.logging.get_logger(__name__)
 
 
@@ -165,14 +166,18 @@ class _Studies(Lister):
                 if s.datetime_start is not None
                 else None
             )
-            row = (s.study_name, s.direction.name, s.n_trials, start)
+            row = (s.study_name, tuple(d.name for d in s.directions), s.n_trials, start)
             rows.append(row)
 
         return self._study_list_header, tuple(rows)
 
 
 class _Dashboard(_BaseCommand):
-    """Launch web dashboard (beta)."""
+    """Launch web dashboard (beta).
+
+    This feature is deprecated since version 2.7.0. Please use `optuna-dashboard
+    <https://github.com/optuna/optuna-dashboard>`_ instead.
+    """
 
     def get_parser(self, prog_name: str) -> ArgumentParser:
 
@@ -203,6 +208,12 @@ class _Dashboard(_BaseCommand):
         )
         return parser
 
+    @deprecated(
+        "2.7.0",
+        "3.0.0",
+        name="dashboard",
+        text="Please use optuna-dashboard (https://github.com/optuna/optuna-dashboard) instead.",
+    )
     def take_action(self, parsed_args: Namespace) -> None:
 
         storage_url = _check_storage_url(self.app_args.storage)
@@ -350,7 +361,7 @@ class _StorageUpgrade(_BaseCommand):
 class _OptunaApp(App):
     def __init__(self) -> None:
 
-        super(_OptunaApp, self).__init__(
+        super().__init__(
             description="",
             version=optuna.__version__,
             command_manager=CommandManager("optuna.command"),

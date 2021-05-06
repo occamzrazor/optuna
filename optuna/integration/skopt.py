@@ -3,6 +3,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 import warnings
 
@@ -38,7 +39,7 @@ class SkoptSampler(BaseSampler):
 
 
             def objective(trial):
-                x = trial.suggest_uniform("x", -10, 10)
+                x = trial.suggest_float("x", -10, 10)
                 y = trial.suggest_int("y", 0, 10)
                 return x ** 2 + y
 
@@ -106,7 +107,7 @@ class SkoptSampler(BaseSampler):
         skopt_kwargs: Optional[Dict[str, Any]] = None,
         n_startup_trials: int = 1,
         *,
-        consider_pruned_trials: bool = False
+        consider_pruned_trials: bool = False,
     ) -> None:
 
         _imports.check()
@@ -157,6 +158,8 @@ class SkoptSampler(BaseSampler):
         search_space: Dict[str, distributions.BaseDistribution],
     ) -> Dict[str, Any]:
 
+        self._raise_error_if_multi_objective(study)
+
         if len(search_space) == 0:
             return {}
 
@@ -175,6 +178,8 @@ class SkoptSampler(BaseSampler):
         param_name: str,
         param_distribution: distributions.BaseDistribution,
     ) -> Any:
+
+        self._raise_error_if_multi_objective(study)
 
         if self._warn_independent_sampling:
             complete_trials = self._get_trials(study)
@@ -217,6 +222,16 @@ class SkoptSampler(BaseSampler):
                 copied_t.value = value
                 complete_trials.append(copied_t)
         return complete_trials
+
+    def after_trial(
+        self,
+        study: Study,
+        trial: FrozenTrial,
+        state: TrialState,
+        values: Optional[Sequence[float]],
+    ) -> None:
+
+        self._independent_sampler.after_trial(study, trial, state, values)
 
 
 class _Optimizer(object):

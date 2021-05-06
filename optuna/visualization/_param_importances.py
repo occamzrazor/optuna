@@ -1,20 +1,17 @@
 from collections import OrderedDict
+from typing import Callable
 from typing import List
 from typing import Optional
 
 import optuna
 from optuna.distributions import BaseDistribution
-from optuna.distributions import CategoricalDistribution
-from optuna.distributions import DiscreteUniformDistribution
-from optuna.distributions import IntLogUniformDistribution
-from optuna.distributions import IntUniformDistribution
-from optuna.distributions import LogUniformDistribution
-from optuna.distributions import UniformDistribution
 from optuna.importance._base import BaseImportanceEvaluator
 from optuna.logging import get_logger
 from optuna.study import Study
+from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 from optuna.visualization._plotly_imports import _imports
+from optuna.visualization._utils import _check_plot_args
 
 
 if _imports.is_successful():
@@ -22,16 +19,6 @@ if _imports.is_successful():
 
     from optuna.visualization._plotly_imports import go
 
-    Blues = plotly.colors.sequential.Blues
-
-    _distribution_colors = {
-        UniformDistribution: Blues[-1],
-        LogUniformDistribution: Blues[-1],
-        DiscreteUniformDistribution: Blues[-1],
-        IntUniformDistribution: Blues[-2],
-        IntLogUniformDistribution: Blues[-2],
-        CategoricalDistribution: Blues[-4],
-    }
 
 logger = get_logger(__name__)
 
@@ -40,6 +27,9 @@ def plot_param_importances(
     study: Study,
     evaluator: Optional[BaseImportanceEvaluator] = None,
     params: Optional[List[str]] = None,
+    *,
+    target: Optional[Callable[[FrozenTrial], float]] = None,
+    target_name: str = "Objective Value",
 ) -> "go.Figure":
     """Plot hyperparameter importances.
 
@@ -47,7 +37,7 @@ def plot_param_importances(
 
         The following code snippet shows how to plot hyperparameter importances.
 
-        .. testcode::
+        .. plotly::
 
             import optuna
 
@@ -59,16 +49,12 @@ def plot_param_importances(
                 return x ** 2 + y ** 3 - z ** 4
 
 
-            study = optuna.create_study(sampler=optuna.samplers.RandomSampler())
+            sampler = optuna.samplers.RandomSampler(seed=10)
+            study = optuna.create_study(sampler=sampler)
             study.optimize(objective, n_trials=100)
 
-            optuna.visualization.plot_param_importances(study)
-
-        .. raw:: html
-
-            <iframe src="../../../_static/plot_param_importances.html"
-             width="100%" height="500px" frameborder="0">
-            </iframe>
+            fig = optuna.visualization.plot_param_importances(study)
+            fig.show()
 
     .. seealso::
 
@@ -86,16 +72,32 @@ def plot_param_importances(
             A list of names of parameters to assess.
             If :obj:`None`, all parameters that are present in all of the completed trials are
             assessed.
+        target:
+            A function to specify the value to display. If it is :obj:`None` and ``study`` is being
+            used for single-objective optimization, the objective values are plotted.
+
+            .. note::
+                Specify this argument if ``study`` is being used for multi-objective
+                optimization. For example, to get the hyperparameter importance of the first
+                objective, use ``target=lambda t: t.values[0]`` for the target parameter.
+        target_name:
+            Target's name to display on the axis label.
 
     Returns:
         A :class:`plotly.graph_objs.Figure` object.
+
+    Raises:
+        :exc:`ValueError`:
+            If ``target`` is :obj:`None` and ``study`` is being used for multi-objective
+            optimization.
     """
 
     _imports.check()
+    _check_plot_args(study, target, target_name)
 
     layout = go.Layout(
         title="Hyperparameter Importances",
-        xaxis={"title": "Importance"},
+        xaxis={"title": f"Importance for {target_name}"},
         yaxis={"title": "Hyperparameter"},
         showlegend=False,
     )
@@ -108,7 +110,7 @@ def plot_param_importances(
         return go.Figure(data=[], layout=layout)
 
     importances = optuna.importance.get_param_importances(
-        study, evaluator=evaluator, params=params
+        study, evaluator=evaluator, params=params, target=target
     )
 
     importances = OrderedDict(reversed(list(importances.items())))
@@ -128,7 +130,7 @@ def plot_param_importances(
                     _make_hovertext(param_name, importance, study)
                     for param_name, importance in importances.items()
                 ],
-                marker_color=[_get_color(param_name, study) for param_name in param_names],
+                marker_color=plotly.colors.sequential.Blues[-4],
                 orientation="h",
             )
         ],
@@ -143,10 +145,6 @@ def _get_distribution(param_name: str, study: Study) -> BaseDistribution:
         if param_name in trial.distributions:
             return trial.distributions[param_name]
     assert False
-
-
-def _get_color(param_name: str, study: Study) -> str:
-    return _distribution_colors[type(_get_distribution(param_name, study))]
 
 
 def _make_hovertext(param_name: str, importance: float, study: Study) -> str:

@@ -44,9 +44,9 @@ class _MultivariateParzenEstimator:
         self._n_observations = next(iter(multivariate_observations.values())).size
         self._weights = self._calculate_weights()
 
-        self._low = {}  # type: Dict[str, Optional[float]]
-        self._high = {}  # type: Dict[str, Optional[float]]
-        self._q = {}  # type: Dict[str, Optional[float]]
+        self._low: Dict[str, Optional[float]] = {}
+        self._high: Dict[str, Optional[float]] = {}
+        self._q: Dict[str, Optional[float]] = {}
         for param_name, dist in search_space.items():
             if isinstance(dist, distributions.CategoricalDistribution):
                 low = high = q = None
@@ -62,9 +62,10 @@ class _MultivariateParzenEstimator:
         # Transformed `multivariate_observations` might be needed for following operations.
         self._sigmas0 = self._precompute_sigmas0(multivariate_observations)
 
-        self._mus = {}  # type: Dict[str, Optional[np.ndarray]]
-        self._sigmas = {}  # type: Dict[str, Optional[np.ndarray]]
-        self._categorical_weights = {}  # type: Dict[str, Optional[np.ndarray]]
+        self._mus: Dict[str, Optional[np.ndarray]] = {}
+        self._sigmas: Dict[str, Optional[np.ndarray]] = {}
+        self._categorical_weights: Dict[str, Optional[np.ndarray]] = {}
+        categorical_weights: Optional[np.ndarray]
         for param_name, dist in search_space.items():
             observations = multivariate_observations[param_name]
             if isinstance(dist, distributions.CategoricalDistribution):
@@ -265,18 +266,21 @@ class _MultivariateParzenEstimator:
             elif isinstance(distribution, distributions.DiscreteUniformDistribution):
                 q = self._q[param_name]
                 samples = np.round((samples - distribution.low) / q) * q + distribution.low
-                transformed[param_name] = np.clip(samples, distribution.low, distribution.high)
+                transformed[param_name] = np.asarray(
+                    np.clip(samples, distribution.low, distribution.high)
+                )
             elif isinstance(distribution, distributions.IntUniformDistribution):
                 q = self._q[param_name]
-                samples = np.round(samples / q) * q
-                transformed[param_name] = np.clip(
-                    samples, distribution.low, distribution.high
-                ).astype(int)
+                assert q is not None
+                samples = np.round((samples - distribution.low) / q) * q + distribution.low
+                transformed[param_name] = np.asarray(
+                    np.clip(samples, distribution.low, distribution.high)
+                )
             elif isinstance(distribution, distributions.IntLogUniformDistribution):
                 samples = np.round(np.exp(samples))
-                transformed[param_name] = np.clip(
-                    samples, distribution.low, distribution.high
-                ).astype(int)
+                transformed[param_name] = np.asarray(
+                    np.clip(samples, distribution.low, distribution.high)
+                )
             elif isinstance(distribution, distributions.CategoricalDistribution):
                 transformed[param_name] = samples
 
@@ -312,9 +316,11 @@ class _MultivariateParzenEstimator:
 
         if consider_prior:
             shape = (n_observations + 1, len(choices))
+            assert prior_weight is not None
             value = prior_weight / (n_observations + 1)
         else:
             shape = (n_observations, len(choices))
+            assert prior_weight is not None
             value = prior_weight / n_observations
         weights = np.full(shape, fill_value=value)
         weights[np.arange(n_observations), observations] += 1
@@ -360,7 +366,7 @@ class _MultivariateParzenEstimator:
             minsigma = 1.0 * (high - low) / min(100.0, (1.0 + len(mus)))
         else:
             minsigma = EPS
-        sigmas = np.clip(sigmas, minsigma, maxsigma)
+        sigmas = np.asarray(np.clip(sigmas, minsigma, maxsigma))
 
         return mus, sigmas
 

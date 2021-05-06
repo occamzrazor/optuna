@@ -2,8 +2,8 @@
 Optuna multi-objective optimization example that optimizes multi-layer perceptrons using PyTorch.
 
 In this example, we optimize the neural network architecture as well as the optimizer configuration
-by considering the validation accuracy of hand-written digit recognition (MNIST dataset) and
-the FLOPS of the PyTorch model. As it is too time consuming to use the whole MNIST dataset,
+by considering the validation accuracy of hand-written digit recognition (FashionMNIST dataset) and
+the FLOPS of the PyTorch model. As it is too time consuming to use the whole FashionMNIST dataset,
 we here use a small subset of it.
 
 """
@@ -53,15 +53,17 @@ def define_model(trial):
 
 
 def get_mnist():
-    # Load MNIST dataset.
-    train_dataset = datasets.MNIST(DIR, train=True, download=True, transform=transforms.ToTensor())
+    # Load FashionMNIST dataset.
+    train_dataset = datasets.FashionMNIST(
+        DIR, train=True, download=True, transform=transforms.ToTensor()
+    )
     train_loader = torch.utils.data.DataLoader(
         torch.utils.data.Subset(train_dataset, list(range(N_TRAIN_EXAMPLES))),
         batch_size=BATCHSIZE,
         shuffle=True,
     )
 
-    val_dataset = datasets.MNIST(DIR, train=False, transform=transforms.ToTensor())
+    val_dataset = datasets.FashionMNIST(DIR, train=False, transform=transforms.ToTensor())
     val_loader = torch.utils.data.DataLoader(
         torch.utils.data.Subset(val_dataset, list(range(N_VAL_EXAMPLES))),
         batch_size=BATCHSIZE,
@@ -81,7 +83,7 @@ def objective(trial):
     lr = trial.suggest_float("lr", 1e-5, 1e-1)
     optimizer = getattr(optim, optimizer_name)(model.parameters(), lr=lr)
 
-    # Get the MNIST dataset.
+    # Get the FashionMNIST dataset.
     train_loader, val_loader = get_mnist()
 
     # Training of the model.
@@ -113,16 +115,14 @@ def objective(trial):
 
 
 if __name__ == "__main__":
-    study = optuna.multi_objective.create_study(["minimize", "maximize"])
+    study = optuna.create_study(directions=["minimize", "maximize"])
     study.optimize(objective, n_trials=100)
 
     print("Number of finished trials: ", len(study.trials))
 
     print("Pareto front:")
 
-    trials = {str(trial.values): trial for trial in study.get_pareto_front_trials()}
-    trials = list(trials.values())
-    trials.sort(key=lambda t: t.values)
+    trials = sorted(study.best_trials, key=lambda t: t.values)
 
     for trial in trials:
         print("  Trial#{}".format(trial.number))

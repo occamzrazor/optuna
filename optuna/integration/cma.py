@@ -4,6 +4,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Sequence
 from typing import Set
 
 import numpy
@@ -48,7 +49,7 @@ class PyCmaSampler(BaseSampler):
 
 
             def objective(trial):
-                x = trial.suggest_uniform("x", -1, 1)
+                x = trial.suggest_float("x", -1, 1)
                 y = trial.suggest_int("y", -1, 1)
                 return x ** 2 + y
 
@@ -180,6 +181,8 @@ class PyCmaSampler(BaseSampler):
         param_distribution: BaseDistribution,
     ) -> float:
 
+        self._raise_error_if_multi_objective(study)
+
         if self._warn_independent_sampling:
             complete_trials = [t for t in study.trials if t.state == TrialState.COMPLETE]
             if len(complete_trials) >= self._n_startup_trials:
@@ -192,6 +195,8 @@ class PyCmaSampler(BaseSampler):
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
     ) -> Dict[str, float]:
+
+        self._raise_error_if_multi_objective(study)
 
         if len(search_space) == 0:
             return {}
@@ -228,7 +233,7 @@ class PyCmaSampler(BaseSampler):
     @staticmethod
     def _initialize_x0(search_space: Dict[str, BaseDistribution]) -> Dict[str, Any]:
 
-        x0 = {}
+        x0: Dict[str, Any] = {}
         for name, distribution in search_space.items():
             if isinstance(distribution, UniformDistribution):
                 x0[name] = numpy.mean([distribution.high, distribution.low])
@@ -278,12 +283,23 @@ class PyCmaSampler(BaseSampler):
             "The parameter '{}' in trial#{} is sampled independently "
             "by using `{}` instead of `PyCmaSampler` "
             "(optimization performance may be degraded). "
+            "`PyCmaSampler` does not support dynamic search space or `CategoricalDistribution`. "
             "You can suppress this warning by setting `warn_independent_sampling` "
             "to `False` in the constructor of `PyCmaSampler`, "
             "if this independent sampling is intended behavior.".format(
                 param_name, trial.number, self._independent_sampler.__class__.__name__
             )
         )
+
+    def after_trial(
+        self,
+        study: Study,
+        trial: FrozenTrial,
+        state: TrialState,
+        values: Optional[Sequence[float]],
+    ) -> None:
+
+        self._independent_sampler.after_trial(study, trial, state, values)
 
 
 class _Optimizer(object):
@@ -308,7 +324,7 @@ class _Optimizer(object):
                 # TODO(Yanase): Support one-hot representation.
                 lows.append(-0.5)
                 highs.append(len(dist.choices) - 0.5)
-            elif isinstance(dist, UniformDistribution) or isinstance(dist, LogUniformDistribution):
+            elif isinstance(dist, (UniformDistribution, LogUniformDistribution)):
                 lows.append(self._to_cma_params(search_space, param_name, dist.low))
                 highs.append(self._to_cma_params(search_space, param_name, dist.high) - _EPS)
             elif isinstance(dist, DiscreteUniformDistribution):
@@ -480,7 +496,7 @@ class CmaEsSampler(PyCmaSampler):
         warn_independent_sampling: bool = True,
     ) -> None:
 
-        super(CmaEsSampler, self).__init__(
+        super().__init__(
             x0=x0,
             sigma0=sigma0,
             cma_stds=cma_stds,

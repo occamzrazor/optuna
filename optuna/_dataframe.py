@@ -1,5 +1,6 @@
 import collections
 from typing import Any
+from typing import DefaultDict
 from typing import Dict
 from typing import List
 from typing import Set
@@ -30,7 +31,10 @@ def _trials_dataframe(
     if not len(trials):
         return pd.DataFrame()
 
-    attrs_to_df_columns = collections.OrderedDict()  # type: Dict[str, str]
+    if "value" in attrs and study._is_multi_objective():
+        attrs = tuple("values" if attr == "value" else attr for attr in attrs)
+
+    attrs_to_df_columns: Dict[str, str] = collections.OrderedDict()
     for attr in attrs:
         if attr.startswith("_"):
             # Python conventional underscores are omitted in the dataframe.
@@ -42,7 +46,7 @@ def _trials_dataframe(
     # column_agg is an aggregator of column names.
     # Keys of column agg are attributes of `FrozenTrial` such as 'trial_id' and 'params'.
     # Values are dataframe columns such as ('trial_id', '') and ('params', 'n_layers').
-    column_agg = collections.defaultdict(set)  # type: Dict[str, Set]
+    column_agg: DefaultDict[str, Set] = collections.defaultdict(set)
     non_nested_attr = ""
 
     def _create_record_and_aggregate_column(
@@ -59,16 +63,27 @@ def _trials_dataframe(
                 for nested_attr, nested_value in value.items():
                     record[(df_column, nested_attr)] = nested_value
                     column_agg[attr].add((df_column, nested_attr))
+            elif isinstance(value, list):
+                # Expand trial.values.
+                for nested_attr, nested_value in enumerate(value):
+                    record[(df_column, nested_attr)] = nested_value
+                    column_agg[attr].add((df_column, nested_attr))
+            elif attr == "values":
+                # trial.values should be None when the trial's state is FAIL or PRUNED.
+                assert value is None
+                for nested_attr in range(len(study.directions)):
+                    record[(df_column, nested_attr)] = None
+                    column_agg[attr].add((df_column, nested_attr))
             else:
                 record[(df_column, non_nested_attr)] = value
                 column_agg[attr].add((df_column, non_nested_attr))
         return record
 
-    records = list([_create_record_and_aggregate_column(trial) for trial in trials])
+    records = [_create_record_and_aggregate_column(trial) for trial in trials]
 
-    columns = sum(
+    columns: List[Tuple[str, str]] = sum(
         (sorted(column_agg[k]) for k in attrs if k in column_agg), []
-    )  # type: List[Tuple[str, str]]
+    )
 
     df = pd.DataFrame(records, columns=pd.MultiIndex.from_tuples(columns))
 

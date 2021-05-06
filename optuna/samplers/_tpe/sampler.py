@@ -4,6 +4,7 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 from typing import Union
 import warnings
@@ -17,9 +18,11 @@ from optuna._study_direction import StudyDirection
 from optuna.distributions import BaseDistribution
 from optuna.exceptions import ExperimentalWarning
 from optuna.logging import get_logger
-from optuna.samplers import BaseSampler
-from optuna.samplers import IntersectionSearchSpace
-from optuna.samplers import RandomSampler
+from optuna.samplers._base import BaseSampler
+from optuna.samplers._random import RandomSampler
+from optuna.samplers._search_space import IntersectionSearchSpace
+from optuna.samplers._search_space.group_decomposed import _GroupDecomposedSearchSpace
+from optuna.samplers._search_space.group_decomposed import _SearchSpaceGroup
 from optuna.samplers._tpe.multivariate_parzen_estimator import _MultivariateParzenEstimator
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorParameters
@@ -89,7 +92,7 @@ class TPESampler(BaseSampler):
 
 
             def objective(trial):
-                x = trial.suggest_uniform("x", -10, 10)
+                x = trial.suggest_float("x", -10, 10)
                 return x ** 2
 
 
@@ -146,10 +149,75 @@ class TPESampler(BaseSampler):
                 Added in v2.2.0 as an experimental feature. The interface may change in newer
                 versions without prior notice. See
                 https://github.com/optuna/optuna/releases/tag/v2.2.0.
+        group:
+            If this and ``multivariate`` are :obj:`True`, the multivariate TPE with the group
+            decomposed search space is used when suggesting parameters.
+            The sampling algorithm decomposes the search space based on past trials and samples
+            from the joint distribution in each decomposed subspace.
+            The decomposed subspaces are a partition of the whole search space. Each subspace
+            is a maximal subset of the whole search space, which satisfies the following:
+            for a trial in completed trials, the intersection of the subspace and the search space
+            of the trial becomes subspace itself or an empty set.
+
+            The search space is decomposed based on the following recursive rules.
+
+            - Initialize the group of the search space with the empty set. The elements of the
+              group are the subset of the search space, and the type is the dictionary of
+              :class:`~optuna.distributions.BaseDistribution`.
+            - Update the group with the following procedure `ADD(trial)` by looking at past trials.
+
+            The procedure of `Add(trial)` is
+
+            - Let ``T = trial.distributions``.
+            - If the intersection of any element of the group and ``T`` is empty, add ``T`` to the
+              group.
+            - If an element ``S`` of the group is contained in ``T``, then add ``T-S`` to the
+              group. We recursively add ``T-S`` to the group because the intersection of ``T-S``
+              and some other elements of the group may not be empty.
+            - If an element ``S`` of a group contains ``T``, remove ``S`` from the group and add
+              ``T`` and ``S-T`` to the group.
+            - If the intersection of an element ``S`` of the group and ``T`` is not empty, remove
+              ``S`` from the group and add ``S∩T``, ``S-T``, and ``T-S`` to the group.
+              We recursively add ``T-S`` to the group because the intersection of ``T-S`` and
+              some other elements of the group may not be empty.
+
+            The group of the search space recursively constructed based on the above rules are
+            disjoint and the union is the entire search space. We perform sampling from the joint
+            distribution for each element of this decomposed group of the search space.
+
+            Sampling from the joint distribution on the subspace is realized by multivariate TPE.
+
+            .. note::
+                Added in v2.8.0 as an experimental feature. The interface may change in newer
+                versions without prior notice. See
+                https://github.com/optuna/optuna/releases/tag/v2.8.0.
+
+            Example:
+
+            .. testcode::
+
+                import optuna
+
+
+                def objective(trial):
+                    x = trial.suggest_categorical("x", ["A", "B"])
+                    if x == "A":
+                        return trial.suggest_float("y", -10, 10)
+                    else:
+                        return trial.suggest_int("z", -10, 10)
+
+
+                sampler = optuna.samplers.TPESampler(multivariate=True, group=True)
+                study = optuna.create_study(sampler=sampler)
+                study.optimize(objective, n_trials=10)
         warn_independent_sampling:
             If this is :obj:`True` and ``multivariate=True``, a warning message is emitted when
             the value of a parameter is sampled by using an independent sampler.
             If ``multivariate=False``, this flag has no effect.
+
+    Raises:
+        ValueError:
+            If ``multivariate`` is :obj:`False` and ``group`` is :obj:`True`.
     """
 
     def __init__(
@@ -165,7 +233,8 @@ class TPESampler(BaseSampler):
         seed: Optional[int] = None,
         *,
         multivariate: bool = False,
-        warn_independent_sampling: bool = True
+        group: bool = False,
+        warn_independent_sampling: bool = True,
     ) -> None:
 
         self._parzen_estimator_parameters = _ParzenEstimatorParameters(
@@ -182,7 +251,10 @@ class TPESampler(BaseSampler):
         self._random_sampler = RandomSampler(seed=seed)
 
         self._multivariate = multivariate
-        self._search_space = IntersectionSearchSpace()
+        self._group = group
+        self._group_decomposed_search_space: Optional[_GroupDecomposedSearchSpace] = None
+        self._search_space_group: Optional[_SearchSpaceGroup] = None
+        self._search_space = IntersectionSearchSpace(include_pruned=True)
 
         if multivariate:
             warnings.warn(
@@ -190,6 +262,18 @@ class TPESampler(BaseSampler):
                 " The interface can change in the future.",
                 ExperimentalWarning,
             )
+
+        if group:
+            if not multivariate:
+                raise ValueError(
+                    "``group`` option can only be enabled when ``multivariate`` is enabled."
+                )
+            warnings.warn(
+                "``group`` option is an experimental feature."
+                " The interface can change in the future.",
+                ExperimentalWarning,
+            )
+            self._group_decomposed_search_space = _GroupDecomposedSearchSpace(True)
 
     def reseed_rng(self) -> None:
 
@@ -203,31 +287,62 @@ class TPESampler(BaseSampler):
         if not self._multivariate:
             return {}
 
-        search_space = {}  # type: Dict[str, BaseDistribution]
+        n_complete_trials = len(study.get_trials(deepcopy=False))
+        search_space: Dict[str, BaseDistribution] = {}
+
+        if self._group:
+            assert self._group_decomposed_search_space is not None
+            self._search_space_group = self._group_decomposed_search_space.calculate(study)
+            for sub_space in self._search_space_group.search_spaces:
+                for name, distribution in sub_space.items():
+                    if not isinstance(distribution, _DISTRIBUTION_CLASSES):
+                        self._log_independent_sampling(n_complete_trials, trial, name)
+                        continue
+                    search_space[name] = distribution
+            return search_space
+
         for name, distribution in self._search_space.calculate(study).items():
             if not isinstance(distribution, _DISTRIBUTION_CLASSES):
-                if self._warn_independent_sampling:
-                    complete_trials = study._storage.get_all_trials(
-                        study._study_id, deepcopy=False
-                    )
-                    if len(complete_trials) >= self._n_startup_trials:
-                        self._log_independent_sampling(trial, name)
+                self._log_independent_sampling(n_complete_trials, trial, name)
                 continue
             search_space[name] = distribution
 
         return search_space
 
-    def _log_independent_sampling(self, trial: FrozenTrial, param_name: str) -> None:
-        _logger.warning(
-            "The parameter '{}' in trial#{} is sampled independently "
-            "instead of being sampled by multivariate TPE sampler. "
-            "(optimization performance may be degraded). "
-            "You can suppress this warning by setting `warn_independent_sampling` "
-            "to `False` in the constructor of `TPESampler`, "
-            "if this independent sampling is intended behavior.".format(param_name, trial.number)
-        )
+    def _log_independent_sampling(
+        self, n_complete_trials: int, trial: FrozenTrial, param_name: str
+    ) -> None:
+        if self._warn_independent_sampling:
+            if n_complete_trials >= self._n_startup_trials:
+                _logger.warning(
+                    f"The parameter '{param_name}' in trial#{trial.number} is sampled "
+                    "independently instead of being sampled by multivariate TPE sampler. "
+                    "(optimization performance may be degraded). "
+                    "You can suppress this warning by setting `warn_independent_sampling` "
+                    "to `False` in the constructor of `TPESampler`, "
+                    "if this independent sampling is intended behavior."
+                )
 
     def sample_relative(
+        self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
+    ) -> Dict[str, Any]:
+
+        self._raise_error_if_multi_objective(study)
+
+        if self._group:
+            assert self._search_space_group is not None
+            params = {}
+            for sub_space in self._search_space_group.search_spaces:
+                search_space = {}
+                for name, distribution in sub_space.items():
+                    if isinstance(distribution, _DISTRIBUTION_CLASSES):
+                        search_space[name] = distribution
+                params.update(self._sample_relative(study, trial, search_space))
+            return params
+        else:
+            return self._sample_relative(study, trial, search_space)
+
+    def _sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
     ) -> Dict[str, Any]:
 
@@ -270,6 +385,8 @@ class TPESampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
+
+        self._raise_error_if_multi_objective(study)
 
         values, scores = _get_observation_pairs(study, param_name)
 
@@ -322,14 +439,13 @@ class TPESampler(BaseSampler):
         self, config_vals: List[Optional[float]], loss_vals: List[Tuple[float, float]]
     ) -> Tuple[np.ndarray, np.ndarray]:
 
-        config_vals = np.asarray(config_vals)
-        loss_vals = np.asarray(loss_vals, dtype=[("step", float), ("score", float)])
-
-        n_below = self._gamma(len(config_vals))
-        loss_ascending = np.argsort(loss_vals)
-        below = config_vals[np.sort(loss_ascending[:n_below])]
+        config_values = np.asarray(config_vals)
+        loss_values = np.asarray(loss_vals, dtype=[("step", float), ("score", float)])
+        n_below = self._gamma(len(config_values))
+        loss_ascending = np.argsort(loss_values)
+        below = config_values[np.sort(loss_ascending[:n_below])]
         below = np.asarray([v for v in below if v is not None], dtype=float)
-        above = config_vals[np.sort(loss_ascending[n_below:])]
+        above = config_values[np.sort(loss_ascending[n_below:])]
         above = np.asarray([v for v in above if v is not None], dtype=float)
         return below, above
 
@@ -339,17 +455,17 @@ class TPESampler(BaseSampler):
         loss_vals: List[Tuple[float, float]],
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
 
-        config_vals = {k: np.asarray(v, dtype=float) for k, v in config_vals.items()}
-        loss_vals = np.asarray(loss_vals, dtype=[("step", float), ("score", float)])
+        config_values = {k: np.asarray(v, dtype=float) for k, v in config_vals.items()}
+        loss_values = np.asarray(loss_vals, dtype=[("step", float), ("score", float)])
 
-        n_below = self._gamma(len(loss_vals))
-        index_loss_ascending = np.argsort(loss_vals)
+        n_below = self._gamma(len(loss_values))
+        index_loss_ascending = np.argsort(loss_values)
         # `np.sort` is used to keep chronological order.
         index_below = np.sort(index_loss_ascending[:n_below])
         index_above = np.sort(index_loss_ascending[n_below:])
         below = {}
         above = {}
-        for param_name, param_val in config_vals.items():
+        for param_name, param_val in config_values.items():
             below[param_name] = param_val[index_below]
             above[param_name] = param_val[index_above]
 
@@ -480,8 +596,8 @@ class TPESampler(BaseSampler):
     ) -> int:
 
         choices = distribution.choices
-        below = list(map(int, below))
-        above = list(map(int, above))
+        below = below.astype(int)
+        above = above.astype(int)
         upper = len(choices)
 
         # We can use `np.arange(len(distribution.choices))` instead of sampling from `l(x)`
@@ -616,7 +732,7 @@ class TPESampler(BaseSampler):
 
         if size == (0,):
             return np.asarray([], dtype=float)
-        assert len(size)
+        assert size
 
         if probabilities.size == 1 and isinstance(probabilities[0], np.ndarray):
             probabilities = probabilities[0]
@@ -672,7 +788,7 @@ class TPESampler(BaseSampler):
                     "But (samples.size, score.size) = ({}, {})".format(sample_size, score.size)
                 )
             best = np.argmax(score)
-            return {k: v[best] for k, v in multivariate_samples.items()}
+            return {k: v[best].item() for k, v in multivariate_samples.items()}
         else:
             raise ValueError(
                 "The size of 'samples' should be more than 0."
@@ -714,7 +830,7 @@ class TPESampler(BaseSampler):
 
 
                 def objective(trial):
-                    x = trial.suggest_uniform("x", -10, 10)
+                    x = trial.suggest_float("x", -10, 10)
                     return x ** 2
 
 
@@ -737,6 +853,16 @@ class TPESampler(BaseSampler):
             "gamma": hyperopt_default_gamma,
             "weights": default_weights,
         }
+
+    def after_trial(
+        self,
+        study: Study,
+        trial: FrozenTrial,
+        state: TrialState,
+        values: Optional[Sequence[float]],
+    ) -> None:
+
+        self._random_sampler.after_trial(study, trial, state, values)
 
 
 def _get_observation_pairs(
@@ -765,8 +891,10 @@ def _get_observation_pairs(
 
     values = []
     scores = []
-    for trial in study._storage.get_all_trials(study._study_id, deepcopy=False):
-        if trial.state is TrialState.COMPLETE and trial.value is not None:
+    for trial in study.get_trials(deepcopy=False, states=(TrialState.COMPLETE, TrialState.PRUNED)):
+        if trial.state is TrialState.COMPLETE:
+            if trial.value is None:
+                continue
             score = (-float("inf"), sign * trial.value)
         elif trial.state is TrialState.PRUNED:
             if len(trial.intermediate_values) > 0:
@@ -778,9 +906,9 @@ def _get_observation_pairs(
             else:
                 score = (float("inf"), 0.0)
         else:
-            continue
+            assert False
 
-        param_value = None  # type: Optional[float]
+        param_value: Optional[float] = None
         if param_name in trial.params:
             distribution = trial.distributions[param_name]
             param_value = distribution.to_internal_repr(trial.params[param_name])
@@ -800,13 +928,17 @@ def _get_multivariate_observation_pairs(
         sign = -1
 
     scores = []
-    values = {
-        param_name: [] for param_name in param_names
-    }  # type: Dict[str, List[Optional[float]]]
-    for trial in study._storage.get_all_trials(study._study_id, deepcopy=False):
+    values: Dict[str, List[Optional[float]]] = {param_name: [] for param_name in param_names}
+    for trial in study.get_trials(deepcopy=False, states=(TrialState.COMPLETE, TrialState.PRUNED)):
+        # If ``group`` = True, there may be trials that are not included in each subspace.
+        # Such trials should be ignored here.
+        if any([param_name not in trial.params for param_name in param_names]):
+            continue
 
         # We extract score from the trial.
-        if trial.state is TrialState.COMPLETE and trial.value is not None:
+        if trial.state is TrialState.COMPLETE:
+            if trial.value is None:
+                continue
             score = (-float("inf"), sign * trial.value)
         elif trial.state is TrialState.PRUNED:
             if len(trial.intermediate_values) > 0:
@@ -818,7 +950,7 @@ def _get_multivariate_observation_pairs(
             else:
                 score = (float("inf"), 0.0)
         else:
-            continue
+            assert False
         scores.append(score)
 
         # We extract param_value from the trial.

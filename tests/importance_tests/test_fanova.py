@@ -5,9 +5,9 @@ from optuna.samplers import RandomSampler
 
 
 def objective(trial: Trial) -> float:
-    x1 = trial.suggest_uniform("x1", 0.1, 3)
-    x2 = trial.suggest_loguniform("x2", 0.1, 3)
-    x3 = trial.suggest_loguniform("x3", 2, 4)
+    x1 = trial.suggest_float("x1", 0.1, 3)
+    x2 = trial.suggest_float("x2", 0.1, 3, log=True)
+    x3 = trial.suggest_float("x3", 2, 4, log=True)
     return x1 + x2 * x3
 
 
@@ -55,3 +55,19 @@ def test_fanova_importance_evaluator_seed() -> None:
     evaluator = FanovaImportanceEvaluator(seed=3)
     param_importance_different_seed = evaluator.evaluate(study)
     assert param_importance != param_importance_different_seed
+
+
+def test_fanova_importance_evaluator_with_target() -> None:
+    # Assumes that `seed` can be fixed to reproduce identical results.
+
+    study = create_study(sampler=RandomSampler(seed=0))
+    study.optimize(objective, n_trials=3)
+
+    evaluator = FanovaImportanceEvaluator(seed=0)
+    param_importance = evaluator.evaluate(study)
+    param_importance_with_target = evaluator.evaluate(
+        study,
+        target=lambda t: t.params["x1"] + t.params["x2"],
+    )
+
+    assert param_importance != param_importance_with_target

@@ -24,6 +24,18 @@ AllenNLP
    optuna.integration.allennlp.dump_best_config
    optuna.integration.AllenNLPPruningCallback
 
+BoTorch
+-------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   optuna.integration.BoTorchSampler
+   optuna.integration.botorch.qei_candidates_func
+   optuna.integration.botorch.qehvi_candidates_func
+   optuna.integration.botorch.qparego_candidates_func
+
 Catalyst
 --------
 
@@ -50,6 +62,8 @@ fast.ai
    :toctree: generated/
    :nosignatures:
 
+   optuna.integration.FastAIV1PruningCallback
+   optuna.integration.FastAIV2PruningCallback
    optuna.integration.FastAIPruningCallback
 
 Keras
@@ -110,6 +124,7 @@ PyTorch
 
    optuna.integration.PyTorchIgnitePruningHandler
    optuna.integration.PyTorchLightningPruningCallback
+   optuna.integration.TorchDistributedTrial
 
 scikit-learn
 ------------
