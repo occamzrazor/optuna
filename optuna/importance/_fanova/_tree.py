@@ -2,14 +2,13 @@ import itertools
 from typing import List
 from typing import Set
 from typing import Tuple
+from typing import TYPE_CHECKING
 from typing import Union
 
 import numpy
 
-from optuna import type_checking
 
-
-if type_checking.TYPE_CHECKING:
+if TYPE_CHECKING:
     import sklearn.tree
 
 
@@ -65,20 +64,20 @@ class _FanovaTree(object):
 
         sample = numpy.full(self._n_features, fill_value=numpy.nan, dtype=numpy.float64)
 
-        values = []  # type: Union[List[float], numpy.ndarray]
-        weights = []  # type: Union[List[float], numpy.ndarray]
+        values: Union[List[float], numpy.ndarray] = []
+        weights: Union[List[float], numpy.ndarray] = []
 
         for midpoints, sizes in zip(product_midpoints, product_sizes):
             sample[features] = numpy.array(midpoints)
 
             value, weight = self._get_marginalized_statistics(sample)
-            weight *= numpy.prod(sizes)
+            weight *= float(numpy.prod(sizes))
 
-            values.append(value)
-            weights.append(weight)
+            values = numpy.append(values, value)
+            weights = numpy.append(weights, weight)
 
-        weights = numpy.array(weights)
-        values = numpy.array(values)
+        weights = numpy.asarray(weights)
+        values = numpy.asarray(values)
         average_values = numpy.average(values, weights=weights)
         variance = numpy.average((values - average_values) ** 2, weights=weights)
 
@@ -137,9 +136,6 @@ class _FanovaTree(object):
             node_indices.append(node_index)
             active_features_cardinalities.append(_get_cardinality(search_spaces))
 
-        node_indices = numpy.array(node_indices, dtype=numpy.int32)
-        active_features_cardinalities = numpy.array(active_features_cardinalities)
-
         statistics = self._statistics[node_indices]
         values = statistics[:, 0]
         weights = statistics[:, 1]
@@ -156,7 +152,7 @@ class _FanovaTree(object):
         # Holds for each node, its weighted average value and the sum of weights.
         statistics = numpy.empty((n_nodes, 2), dtype=numpy.float64)
 
-        subspaces = [None for _ in range(n_nodes)]
+        subspaces = numpy.array([None for _ in range(n_nodes)])
         subspaces[0] = self._search_spaces
 
         # Compute marginals for leaf nodes.
@@ -184,7 +180,7 @@ class _FanovaTree(object):
                     child_values.append(statistics[child_node_index, 0])
                     child_weights.append(statistics[child_node_index, 1])
                 value = numpy.average(child_values, weights=child_weights)
-                weight = numpy.sum(child_weights)
+                weight = float(numpy.sum(child_weights))
                 statistics[node_index] = [value, weight]
 
         return statistics
@@ -213,7 +209,7 @@ class _FanovaTree(object):
         return midpoints, sizes
 
     def _compute_features_split_values(self) -> List[numpy.ndarray]:
-        all_split_values = [set() for _ in range(self._n_features)]  # type: List[Set[float]]
+        all_split_values: List[Set[float]] = [set() for _ in range(self._n_features)]
 
         for node_index in range(self._n_nodes):
             feature = self._get_node_split_feature(node_index)
@@ -221,7 +217,7 @@ class _FanovaTree(object):
                 threshold = self._get_node_split_threshold(node_index)
                 all_split_values[feature].add(threshold)
 
-        sorted_all_split_values = []  # type: List[numpy.ndarray]
+        sorted_all_split_values: List[numpy.ndarray] = []
 
         for split_values in all_split_values:
             split_values_array = numpy.array(list(split_values), dtype=numpy.float64)
@@ -230,7 +226,7 @@ class _FanovaTree(object):
 
         return sorted_all_split_values
 
-    def _precompute_subtree_active_features(self) -> List[Set[int]]:
+    def _precompute_subtree_active_features(self) -> numpy.ndarray:
         subtree_active_features = numpy.full((self._n_nodes, self._n_features), fill_value=False)
 
         for node_index in reversed(range(self._n_nodes)):

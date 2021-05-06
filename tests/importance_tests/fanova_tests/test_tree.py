@@ -90,8 +90,7 @@ def test_tree_get_marginal_variance(
     expected: List[Tuple[List[Size], List[Tuple[NodeIndex, Cardinality]]]],
     expected_tree_statistics: List[Dict[str, List]],
 ) -> None:
-    features = numpy.array(features)
-    variance = tree.get_marginal_variance(features)
+    variance = tree.get_marginal_variance(numpy.array(features))
 
     expected_values = []
     expected_weights = []
@@ -207,7 +206,7 @@ def test_tree_split_sizes(tree: _FanovaTree, node_index: NodeIndex, expected: Li
 def test_tree_subtree_active_features(
     tree: _FanovaTree, node_index: NodeIndex, expected: List[bool]
 ) -> None:
-    active_features = tree._subtree_active_features[node_index] == expected  # type: numpy.ndarray
+    active_features: numpy.ndarray = tree._subtree_active_features[node_index] == expected
     assert active_features.all()
 
 

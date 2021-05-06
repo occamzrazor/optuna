@@ -39,7 +39,7 @@ class LightGBMPruningCallback(object):
     """Callback for LightGBM to prune unpromising trials.
 
     See `the example <https://github.com/optuna/optuna/blob/master/
-    examples/pruning/lightgbm_integration.py>`__
+    examples/lightgbm/lightgbm_integration.py>`__
     if you want to add a pruning callback which observes AUC
     of a LightGBM model.
 
@@ -92,20 +92,14 @@ class LightGBMPruningCallback(object):
                 continue
 
             if is_higher_better:
-                if (
-                    self._trial.storage.get_study_direction(self._trial.study._study_id)
-                    != optuna.study.StudyDirection.MAXIMIZE
-                ):
+                if self._trial.study.direction != optuna.study.StudyDirection.MAXIMIZE:
                     raise ValueError(
                         "The intermediate values are inconsistent with the objective values in "
                         "terms of study directions. Please specify a metric to be minimized for "
                         "LightGBMPruningCallback."
                     )
             else:
-                if (
-                    self._trial.storage.get_study_direction(self._trial.study._study_id)
-                    != optuna.study.StudyDirection.MINIMIZE
-                ):
+                if self._trial.study.direction != optuna.study.StudyDirection.MINIMIZE:
                     raise ValueError(
                         "The intermediate values are inconsistent with the objective values in "
                         "terms of study directions. Please specify a metric to be maximized for "

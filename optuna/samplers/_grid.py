@@ -2,9 +2,11 @@ import collections
 import itertools
 import random
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Mapping
+from typing import Optional
 from typing import Sequence
 from typing import Union
 
@@ -13,9 +15,11 @@ from optuna.logging import get_logger
 from optuna.samplers import BaseSampler
 from optuna.study import Study
 from optuna.trial import FrozenTrial
+from optuna.trial import TrialState
 
 
 GridValueType = Union[str, float, int, bool, None]
+SortableParamValueSequenceType = Union[List[str], List[float], List[int], List[bool]]
 
 
 _logger = get_logger(__name__)
@@ -35,14 +39,14 @@ class GridSampler(BaseSampler):
 
 
             def objective(trial):
-                x = trial.suggest_uniform("x", -100, 100)
+                x = trial.suggest_float("x", -100, 100)
                 y = trial.suggest_int("y", -100, 100)
                 return x ** 2 + y ** 2
 
 
             search_space = {"x": [-50, 0, 50], "y": [-99, 0, 99]}
             study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space))
-            study.optimize(objective, n_trials=3 * 3)
+            study.optimize(objective)
 
     Note:
 
@@ -64,7 +68,7 @@ class GridSampler(BaseSampler):
 
             def objective(trial):
                 # The following suggest method specifies integer points between -5 and 5.
-                x = trial.suggest_discrete_uniform("x", -5, 5, 1)
+                x = trial.suggest_float("x", -5, 5, step=1)
                 return x ** 2
 
 
@@ -72,6 +76,17 @@ class GridSampler(BaseSampler):
             search_space = {"x": [-0.5, 0.5]}
             study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space))
             study.optimize(objective, n_trials=2)
+
+    Note:
+        A parameter configuration in the grid is not considered finished until its trial is
+        finished. Therefore, during distributed optimization where trials run concurrently,
+        different workers will occasionally suggest the same parameter configuration.
+        The total number of actual trials may therefore exceed the size of the grid.
+
+    Note:
+        The grid is randomly shuffled and the order in which parameter configurations are
+        suggested may vary. This is to reduce duplicate suggestions during distributed
+        optimization.
 
     Args:
         search_space:
@@ -87,6 +102,8 @@ class GridSampler(BaseSampler):
 
         self._search_space = collections.OrderedDict()
         for param_name, param_values in sorted(search_space.items(), key=lambda x: x[0]):
+            param_values = cast(SortableParamValueSequenceType, param_values)
+
             self._search_space[param_name] = sorted(param_values)
 
         self._all_grids = list(itertools.product(*self._search_space.values()))
@@ -122,14 +139,6 @@ class GridSampler(BaseSampler):
 
             # One of all grids is randomly picked up in this case.
             target_grids = list(range(len(self._all_grids)))
-
-            study.stop()
-
-        elif len(target_grids) == 1:
-            # When there is only one target grid, optimization stops after the current trial
-            # finishes.
-
-            study.stop()
 
         # In distributed optimization, multiple workers may simultaneously pick up the same grid.
         # To make the conflict less frequent, the grid is chosen randomly.
@@ -170,6 +179,22 @@ class GridSampler(BaseSampler):
 
         return param_value
 
+    def after_trial(
+        self,
+        study: Study,
+        trial: FrozenTrial,
+        state: TrialState,
+        values: Optional[Sequence[float]],
+    ) -> None:
+        target_grids = self._get_unvisited_grid_ids(study)
+
+        if len(target_grids) == 0:
+            study.stop()
+        elif len(target_grids) == 1:
+            grid_id = study._storage.get_trial_system_attrs(trial._trial_id)["grid_id"]
+            if grid_id == target_grids[0]:
+                study.stop()
+
     @staticmethod
     def _check_value(param_name: str, param_value: Any) -> None:
 
@@ -186,7 +211,13 @@ class GridSampler(BaseSampler):
 
         # List up unvisited grids based on already finished ones.
         visited_grids = []
-        for t in study.trials:
+
+        # We directly query the storage to get trials here instead of `study.get_trials`,
+        # since some pruners such as `HyperbandPruner` use the study transformed
+        # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
+        trials = study._storage.get_all_trials(study._study_id, deepcopy=False)
+
+        for t in trials:
             if (
                 t.state.is_finished()
                 and "grid_id" in t.system_attrs
@@ -207,7 +238,8 @@ class GridSampler(BaseSampler):
             if len(search_space[param_name]) != len(self._search_space[param_name]):
                 return False
 
-            for i, param_value in enumerate(sorted(search_space[param_name])):
+            param_values = cast(SortableParamValueSequenceType, search_space[param_name])
+            for i, param_value in enumerate(sorted(param_values)):
                 if param_value != self._search_space[param_name][i]:
                     return False
 
